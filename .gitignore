@@ -1,4 +1,5 @@
 /xnu
+/kext_tools
 /PongoOS
 target/
 .cache/

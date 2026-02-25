@@ -20,10 +20,11 @@ ESP_DIR="target/esp"
 mkdir -p "${ESP_DIR}/EFI/BOOT"
 cp "$EFI_BINARY" "${ESP_DIR}/EFI/BOOT/BOOTX64.EFI"
 
-if [[ -f "../kernel.kasan" ]]; then
-    cp "../kernel.kasan" "${ESP_DIR}/kernel.kasan"
+if [[ -f "../kernel.kc" ]]; then
+    cp "../kernel.kc" "${ESP_DIR}/kernel.kc"
 else
-    echo "ERROR: kernel.kasan not found in parent directory"
+    echo "ERROR: kernel.kc not found in parent directory"
+    echo "  Run: cargo run --release --manifest-path ../tools/mkstatickcl/Cargo.toml -- ../kernel.kasan ../kernel.kc"
     exit 1
 fi
 

@@ -38,6 +38,8 @@ pub struct KernelInfo {
     pub kaddr: u64,
     /// Total size of loaded kernel image (ksize).
     pub ksize: u64,
+    /// Physical address of the Mach-O header (segment with fileoff=0).
+    pub mach_header_phys: u64,
     /// Staging buffer physical address (allocated in high memory).
     pub staging_base: u64,
     /// Segments to be relocated after ExitBootServices.
@@ -60,6 +62,7 @@ pub fn load_kernel(data: &[u8]) -> KernelInfo {
     let mut lowest_phys: u64 = u64::MAX;
     let mut highest_phys: u64 = 0;
     let mut staging_offset: u64 = 0;
+    let mut mach_header_phys: u64 = 0;
 
     // Also store file offsets for the copy phase
     let mut file_offsets: Vec<(u64, u64)> = Vec::new(); // (fileoff, filesize) parallel to segments
@@ -85,6 +88,10 @@ pub fn load_kernel(data: &[u8]) -> KernelInfo {
                 }
 
                 let phys_addr = seg.vmaddr - KERNEL_BASE;
+                // The Mach-O header is at the start of the segment with fileoff=0
+                if seg.fileoff == 0 {
+                    mach_header_phys = phys_addr;
+                }
                 let cur_offset = staging_offset;
                 staging_offset += seg.filesize;
 
@@ -173,6 +180,7 @@ pub fn load_kernel(data: &[u8]) -> KernelInfo {
         entry_point: entry_phys,
         kaddr: lowest_phys,
         ksize: highest_phys - lowest_phys,
+        mach_header_phys,
         staging_base,
         segments,
     }

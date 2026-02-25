@@ -45,7 +45,7 @@ fn panic_handler(info: &core::panic::PanicInfo) -> ! {
 }
 
 /// The kernel file to load from the EFI system partition.
-const KERNEL_FILENAME: &str = "kernel.kasan";
+const KERNEL_FILENAME: &str = "kernel.kc";
 
 #[entry]
 fn main() -> Status {
@@ -151,11 +151,11 @@ fn main() -> Status {
         let ba = &mut *(ba_phys as *mut BootArgs);
         *ba = BootArgs::zeroed();
 
-        ba.revision = 0;
+        ba.revision = 1;
         ba.version = 2;
         ba.efi_mode = 64;
 
-        let cmdline = b"debug=0x14e serial=3 -v";
+        let cmdline = b"debug=0x14e serial=3 keepsyms=1 -v";
         ba.command_line[..cmdline.len()].copy_from_slice(cmdline);
 
         ba.kaddr = kernel_info.kaddr as u32;
@@ -190,6 +190,13 @@ fn main() -> Status {
         ba.boot_mem_size = total_mem;
         ba.fsb_frequency = 100_000_000;
         ba.csr_active_config = 0x7F;
+
+        // KC headers virtual address: physical addr of the Mach-O header.
+        // This is the __TEXT segment base (fileoff=0), NOT kaddr (which may
+        // be __HIB or __NULL at a lower address).
+        // With revision >= 1 and KC_hdrs_vaddr != 0, XNU calls
+        // i386_slide_and_rebase_image() → PE_set_kc_header(KCKindPrimary).
+        ba.kc_hdrs_vaddr = kernel_info.mach_header_phys;
     }
 
     serial_println!("    boot_args at 0x{:x}", ba_phys);
