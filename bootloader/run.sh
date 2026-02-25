@@ -52,9 +52,11 @@ exec qemu-system-x86_64 \
     -drive format=raw,file=fat:rw:"${ESP_DIR}" \
     -machine q35 \
     -m 512M \
-    -cpu qemu64,+sse2,+sse3,+ssse3,+sse4.1,+sse4.2,+x2apic,+rdrand \
+    -cpu Penryn,-vmx \
     -smp 1 \
     -nographic \
     -no-reboot \
     -D target/qemu.log \
+    -monitor unix:target/monitor.sock,server,nowait \
+    -s \
     "$@"
