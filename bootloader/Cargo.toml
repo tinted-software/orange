@@ -1,0 +1,9 @@
+[package]
+name = "xnuboot"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+uefi = { version = "0.36", features = ["global_allocator"] }
+goblin = { version = "0.9", default-features = false, features = ["mach64", "alloc"] }
+log = "0.4"

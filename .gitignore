@@ -1,0 +1,6 @@
+/xnu
+/PongoOS
+target/
+.cache/
+.DS_Store
+/kernel.*
