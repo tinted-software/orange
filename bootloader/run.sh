@@ -20,43 +20,38 @@ ESP_DIR="target/esp"
 mkdir -p "${ESP_DIR}/EFI/BOOT"
 cp "$EFI_BINARY" "${ESP_DIR}/EFI/BOOT/BOOTX64.EFI"
 
-if [[ -f "../kernel.development" ]]; then
-    cp "../kernel.development" "${ESP_DIR}/kernel.development"
+if [[ -f "../kernel.kasan" ]]; then
+    cp "../kernel.kasan" "${ESP_DIR}/kernel.kasan"
 else
-    echo "ERROR: kernel.development not found in parent directory"
+    echo "ERROR: kernel.kasan not found in parent directory"
     exit 1
 fi
 
-OVMF_CODE="$(find /opt/homebrew -name 'edk2-x86_64-code.fd' 2>/dev/null | head -1)"
-if [[ -z "$OVMF_CODE" ]]; then
-    echo "ERROR: OVMF firmware not found."
-    exit 1
+OVMF_CODE="../DEBUGX64_OVMF.fd"
+if [[ ! -f "$OVMF_CODE" ]]; then
+    curl -L https://retrage.github.io/edk2-nightly/bin/DEBUGX64_OVMF.fd -o "$OVMF_CODE"
 fi
 
-OVMF_VARS="target/ovmf_vars.fd"
+OVMF_VARS="../DEBUGX64_OVMF_VARS.fd"
 if [[ ! -f "$OVMF_VARS" ]]; then
-    OVMF_VARS_SRC="$(find /opt/homebrew -name 'edk2-i386-vars.fd' 2>/dev/null | head -1)"
-    if [[ -n "$OVMF_VARS_SRC" ]]; then
-        cp "$OVMF_VARS_SRC" "$OVMF_VARS"
-    else
-        dd if=/dev/zero of="$OVMF_VARS" bs=256k count=1 2>/dev/null
-    fi
+    curl -L https://retrage.github.io/edk2-nightly/bin/DEBUGX64_OVMF_VARS.fd -o "$OVMF_VARS"
 fi
 
 echo "==> Starting QEMU..."
 echo "    EFI:  $EFI_BINARY"
+echo "    OVMF: $OVMF_CODE"
+echo "    OVMF Vars: $OVMF_VARS"
+echo "    ESP:  $ESP_DIR"
 
 exec qemu-system-x86_64 \
     -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
     -drive if=pflash,format=raw,file="$OVMF_VARS" \
     -drive format=raw,file=fat:rw:"${ESP_DIR}" \
     -machine q35 \
-    -m 512M \
-    -cpu Penryn,-vmx \
-    -smp 1 \
+    -m 2048M \
+    -cpu Penryn,+sse4.2,+x2apic,tsc-frequency=3000000000 \
+    -smp 8 \
     -nographic \
     -no-reboot \
     -D target/qemu.log \
-    -monitor unix:target/monitor.sock,server,nowait \
-    -s \
     "$@"

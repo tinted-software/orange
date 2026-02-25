@@ -4,3 +4,4 @@ target/
 .cache/
 .DS_Store
 /kernel.*
+*.fd

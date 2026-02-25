@@ -74,6 +74,7 @@ pub fn build_device_tree() -> Vec<u8> {
             ],
         ),
         ("FSBFrequency", &100_000_000u64.to_le_bytes()),
+        ("ARTFrequency", &24_000_000u64.to_le_bytes()),
     ];
 
     // Root node: 6 properties, 3 children (chosen, options, efi)

@@ -45,7 +45,7 @@ fn panic_handler(info: &core::panic::PanicInfo) -> ! {
 }
 
 /// The kernel file to load from the EFI system partition.
-const KERNEL_FILENAME: &str = "kernel.development";
+const KERNEL_FILENAME: &str = "kernel.kasan";
 
 #[entry]
 fn main() -> Status {
