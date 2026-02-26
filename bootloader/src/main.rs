@@ -85,6 +85,13 @@ fn main() -> Status {
     let dt_data = devicetree::build_device_tree();
     serial_println!("    dt size={}", dt_data.len());
 
+    // Capture EFI system table pointer before exiting boot services.
+    // XNU needs this to locate ACPI tables (RSDP → MADT) for CPU enumeration.
+    let efi_system_table_ptr = uefi::table::system_table_raw()
+        .expect("Failed to get EFI system table pointer")
+        .as_ptr() as u64;
+    serial_println!("    EFI system table at 0x{:x}", efi_system_table_ptr);
+
     // Step 5: Exit boot services
     serial_println!("[5] Exiting boot services...");
     let memory_map = unsafe { boot::exit_boot_services(None) };
@@ -184,6 +191,8 @@ fn main() -> Status {
         ba.video.v_height = height;
         ba.video.v_depth = 32;
         ba.video.v_base_addr = fb_base;
+
+        ba.efi_system_table = efi_system_table_ptr as u32;
 
         ba.physical_memory_size = total_mem;
         ba.boot_mem_start = 0;
