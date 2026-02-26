@@ -5,5 +5,9 @@ edition = "2021"
 
 [dependencies]
 uefi = { version = "0.36", features = ["global_allocator"] }
-goblin = { version = "0.9", default-features = false, features = ["mach64", "alloc"] }
+uefi-raw = "0.13"
+goblin = { workspace = true, features = ["mach64"] }
 log = "0.4"
+
+[lints]
+workspace = true

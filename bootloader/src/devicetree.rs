@@ -22,7 +22,7 @@ use alloc::vec::Vec;
 /// - "chosen" child with "boot-args" and other props
 /// - "efi" child with firmware-related info
 /// - "memory-map" (can be empty but node must exist)
-pub fn build_device_tree() -> Vec<u8> {
+pub fn build_device_tree(ramdisk: Option<(u64, u64)>) -> Vec<u8> {
     let mut dt = Vec::with_capacity(4096);
 
     // Root node: "/" (unnamed, but has properties)
@@ -86,10 +86,31 @@ pub fn build_device_tree() -> Vec<u8> {
         write_property(&mut dt, name, value);
     }
 
-    // Child: chosen (0 children)
+    // Child: chosen (1 child: memory-map)
     write_u32(&mut dt, chosen_props.len() as u32);
-    write_u32(&mut dt, 0);
+    write_u32(&mut dt, 1);
     for (name, value) in chosen_props {
+        write_property(&mut dt, name, value);
+    }
+
+    // chosen/memory-map
+    // XNU's readStartupExtensions() looks up /chosen/memory-map via
+    // IORegistryEntry::fromPath(). Without this node it prints
+    // "Can't read booter memory map." and skips kext loading.
+    // If a ramdisk is provided, add a RAMDisk property (two u64: addr, size).
+    let ramdisk_data: [u8; 16];
+    let mut memory_map_props: Vec<(&str, &[u8])> = Vec::new();
+    memory_map_props.push(("name", b"memory-map\0"));
+    if let Some((addr, size)) = ramdisk {
+        let mut buf = [0u8; 16];
+        buf[0..8].copy_from_slice(&addr.to_le_bytes());
+        buf[8..16].copy_from_slice(&size.to_le_bytes());
+        ramdisk_data = buf;
+        memory_map_props.push(("RAMDisk", &ramdisk_data));
+    }
+    write_u32(&mut dt, memory_map_props.len() as u32);
+    write_u32(&mut dt, 0);
+    for (name, value) in &memory_map_props {
         write_property(&mut dt, name, value);
     }
 
@@ -141,7 +162,7 @@ fn write_property(buf: &mut Vec<u8>, name: &str, value: &[u8]) {
 
     // Write length (value length, upper bits can have flags but we use 0)
     let len = value.len() as u32;
-    write_u32(buf, len & 0x7FFFFFFF); // Mask off flag bit
+    write_u32(buf, len & 0x7FFF_FFFF); // Mask off flag bit
 
     // Write value data, padded to 4-byte alignment
     buf.extend_from_slice(value);

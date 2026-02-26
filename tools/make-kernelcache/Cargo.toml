@@ -1,7 +1,10 @@
 [package]
-name = "mkstatickc"
+name = "make-kernelcache"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 goblin = "0.10.5"
+
+[lints]
+workspace = true

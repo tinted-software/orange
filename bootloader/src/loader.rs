@@ -16,7 +16,7 @@ use goblin::mach::Mach;
 use uefi::boot::{self, AllocateType, MemoryType};
 
 /// Physical address base: XNU maps vmaddr 0xffffff80_00000000 → physical 0x0.
-const KERNEL_BASE: u64 = 0xffffff8000000000;
+const KERNEL_BASE: u64 = 0xffff_ff80_0000_0000;
 
 /// Information about a kernel segment to be relocated.
 pub struct SegmentLoad {

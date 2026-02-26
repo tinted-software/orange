@@ -47,6 +47,9 @@ fn panic_handler(info: &core::panic::PanicInfo) -> ! {
 /// The kernel file to load from the EFI system partition.
 const KERNEL_FILENAME: &str = "kernel.kc";
 
+/// The ramdisk file to load from the EFI system partition (optional).
+const RAMDISK_FILENAME: &str = "rootfs.dmg";
+
 #[entry]
 fn main() -> Status {
     uefi::helpers::init().unwrap();
@@ -55,8 +58,17 @@ fn main() -> Status {
 
     // Step 1: Load the kernel file
     serial_println!("[1] Loading kernel file...");
-    let kernel_data = load_kernel_file();
+    let kernel_data = load_file(KERNEL_FILENAME);
     serial_println!("    Loaded {} bytes", kernel_data.len());
+
+    // Load ramdisk (optional)
+    serial_println!("[1b] Loading ramdisk...");
+    let ramdisk_data = load_file_optional(RAMDISK_FILENAME);
+    if let Some(ref rd) = ramdisk_data {
+        serial_println!("    Loaded {} bytes", rd.len());
+    } else {
+        serial_println!("    No ramdisk found ({})", RAMDISK_FILENAME);
+    }
 
     // Step 2: Parse Mach-O and stage segments
     serial_println!("[2] Parsing Mach-O...");
@@ -80,17 +92,45 @@ fn main() -> Status {
         fb_size
     );
 
-    // Step 4: Build device tree (keep data for later copy)
+    // Step 4: Build device tree
+    // Pre-compute ramdisk physical address: it goes right after the kernel.
     serial_println!("[4] Building device tree...");
-    let dt_data = devicetree::build_device_tree();
+    let rd_phys_precomputed = page_align(kernel_info.kaddr + kernel_info.ksize);
+    let ramdisk_dt_info = ramdisk_data
+        .as_ref()
+        .map(|rd| (rd_phys_precomputed, rd.len() as u64));
+    let dt_data = devicetree::build_device_tree(ramdisk_dt_info);
     serial_println!("    dt size={}", dt_data.len());
 
-    // Capture EFI system table pointer before exiting boot services.
-    // XNU needs this to locate ACPI tables (RSDP → MADT) for CPU enumeration.
-    let efi_system_table_ptr = uefi::table::system_table_raw()
-        .expect("Failed to get EFI system table pointer")
-        .as_ptr() as u64;
-    serial_println!("    EFI system table at 0x{:x}", efi_system_table_ptr);
+    // Capture EFI system table before exiting boot services.
+    // XNU accesses it via ml_static_ptovirt which only maps 0..physfree,
+    // so we must copy it into the boot data area. We also copy the
+    // configuration table entries (needed for ACPI RSDP → MADT → CPU count).
+    let st_ptr = uefi::table::system_table_raw().expect("Failed to get EFI system table pointer");
+    let st = unsafe { &*st_ptr.as_ptr() };
+    let st_size = st.header.size as usize;
+    let mut st_copy = alloc::vec![0u8; st_size];
+    unsafe {
+        core::ptr::copy_nonoverlapping(st_ptr.as_ptr() as *const u8, st_copy.as_mut_ptr(), st_size);
+    }
+    let cfg_count = st.number_of_configuration_table_entries;
+    let cfg_entry_size = core::mem::size_of::<uefi_raw::table::configuration::ConfigurationTable>();
+    let cfg_total = cfg_count * cfg_entry_size;
+    let mut cfg_copy = alloc::vec![0u8; cfg_total];
+    if cfg_count > 0 {
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                st.configuration_table as *const u8,
+                cfg_copy.as_mut_ptr(),
+                cfg_total,
+            );
+        }
+    }
+    serial_println!(
+        "    EFI system table: {} bytes, {} config entries",
+        st_size,
+        cfg_count
+    );
 
     // Step 5: Exit boot services
     serial_println!("[5] Exiting boot services...");
@@ -108,23 +148,44 @@ fn main() -> Status {
     //
     // XNU's Idle_PTs_init() only maps physical pages 0..physfree,
     // where physfree = kaddr + ksize. So boot_args, device tree,
-    // and memory map MUST be within that range.
+    // memory map, and EFI system table MUST be within that range.
     //
     // Layout at kaddr + original_ksize:
-    //   [device_tree]  (page-aligned)
-    //   [memory_map]   (4 pages = 16KB, enough for ~340 entries)
-    //   [boot_args]    (1 page = 4096 bytes)
+    //   [device_tree]       (page-aligned)
+    //   [memory_map]        (4 pages = 16KB)
+    //   [efi_config_table]  (config table entries copy)
+    //   [efi_system_table]  (system table copy, 8-byte aligned)
+    //   [boot_args]         (1 page = 4096 bytes)
     //
     // Then ksize is expanded to cover everything.
 
     let mut cursor = page_align(kernel_info.kaddr + kernel_info.ksize);
 
-    // 7a: Copy device tree
+    // 7a: Copy ramdisk into physical memory
+    let ramdisk_info = if let Some(ref rd) = ramdisk_data {
+        let rd_phys = cursor;
+        assert_eq!(rd_phys, rd_phys_precomputed, "ramdisk address mismatch");
+        let rd_pages = (rd.len() + 0xFFF) / 0x1000;
+        unsafe {
+            core::ptr::copy_nonoverlapping(rd.as_ptr(), rd_phys as *mut u8, rd.len());
+            let remainder = rd_pages * 0x1000 - rd.len();
+            if remainder > 0 {
+                core::ptr::write_bytes((rd_phys as *mut u8).add(rd.len()), 0, remainder);
+            }
+        }
+        cursor += (rd_pages * 0x1000) as u64;
+        serial_println!("    ramdisk at 0x{:x}, {} bytes", rd_phys, rd.len());
+        Some((rd_phys, rd.len() as u64))
+    } else {
+        None
+    };
+
+    // 7b: Copy device tree (already built before ExitBootServices)
+
     let dt_phys = cursor;
     let dt_pages = (dt_data.len() + 0xFFF) / 0x1000;
     unsafe {
         core::ptr::copy_nonoverlapping(dt_data.as_ptr(), dt_phys as *mut u8, dt_data.len());
-        // Zero the rest of the page
         let remainder = dt_pages * 0x1000 - dt_data.len();
         if remainder > 0 {
             core::ptr::write_bytes((dt_phys as *mut u8).add(dt_data.len()), 0, remainder);
@@ -147,7 +208,69 @@ fn main() -> Status {
     // Compute total usable memory from the memory map
     let total_mem = unsafe { count_usable_memory(&memory_map) };
 
-    // 7c: Write boot_args (1 page)
+    // 7c: Copy EFI configuration table entries into boot area
+    let cfg_phys = cursor;
+    unsafe {
+        core::ptr::copy_nonoverlapping(cfg_copy.as_ptr(), cfg_phys as *mut u8, cfg_total);
+        // Zero-pad to 8-byte alignment
+        let aligned = (cfg_total + 7) & !7;
+        if aligned > cfg_total {
+            core::ptr::write_bytes((cfg_phys as *mut u8).add(cfg_total), 0, aligned - cfg_total);
+        }
+        cursor += aligned as u64;
+    }
+    serial_println!(
+        "    efi cfg table at 0x{:x}, {} entries",
+        cfg_phys,
+        cfg_count
+    );
+
+    // 7d: Copy EFI system table into boot area, patch for XNU compatibility
+    let est_phys = cursor;
+    unsafe {
+        core::ptr::copy_nonoverlapping(st_copy.as_ptr(), est_phys as *mut u8, st_size);
+        let aligned = (st_size + 7) & !7;
+        if aligned > st_size {
+            core::ptr::write_bytes((est_phys as *mut u8).add(st_size), 0, aligned - st_size);
+        }
+        cursor += aligned as u64;
+
+        // Patch: point ConfigurationTable to our copy in the boot area,
+        // zero RuntimeServices (we don't support SetVirtualAddressMap),
+        // and recompute the header CRC32.
+        #[repr(C)]
+        struct EfiSystemTable64 {
+            signature: u64,
+            revision: u32,
+            header_size: u32,
+            crc32: u32,
+            reserved: u32,
+            firmware_vendor: u64,
+            firmware_revision: u32,
+            _pad: u32,
+            console_in_handle: u64,
+            con_in: u64,
+            console_out_handle: u64,
+            con_out: u64,
+            stderr_handle: u64,
+            std_err: u64,
+            runtime_services: u64,
+            boot_services: u64,
+            number_of_table_entries: u64,
+            configuration_table: u64,
+        }
+        let est = &mut *(est_phys as *mut EfiSystemTable64);
+        est.configuration_table = cfg_phys;
+        est.runtime_services = 0;
+        est.boot_services = 0;
+        // Recompute CRC32 over header_size bytes with crc32 field zeroed
+        est.crc32 = 0;
+        let hdr_size = est.header_size as usize;
+        est.crc32 = crc32(core::slice::from_raw_parts(est_phys as *const u8, hdr_size));
+    }
+    serial_println!("    efi sys table at 0x{:x}, {} bytes", est_phys, st_size);
+
+    // 7e: Write boot_args (1 page)
     let ba_phys = cursor;
     cursor += 0x1000;
 
@@ -162,7 +285,11 @@ fn main() -> Status {
         ba.version = 2;
         ba.efi_mode = 64;
 
-        let cmdline = b"debug=0x14e serial=3 keepsyms=1 -v";
+        let cmdline = if ramdisk_info.is_some() {
+            &b"debug=0x14e serial=3 keepsyms=1 x2apic=0 io=0x1 rd=md0 cpus=1 -v"[..]
+        } else {
+            &b"debug=0x14e serial=3 keepsyms=1 x2apic=0 io=0x1 cpus=1 -v"[..]
+        };
         ba.command_line[..cmdline.len()].copy_from_slice(cmdline);
 
         ba.kaddr = kernel_info.kaddr as u32;
@@ -192,7 +319,7 @@ fn main() -> Status {
         ba.video.v_depth = 32;
         ba.video.v_base_addr = fb_base;
 
-        ba.efi_system_table = efi_system_table_ptr as u32;
+        ba.efi_system_table = est_phys as u32;
 
         ba.physical_memory_size = total_mem;
         ba.boot_mem_start = 0;
@@ -200,12 +327,12 @@ fn main() -> Status {
         ba.fsb_frequency = 100_000_000;
         ba.csr_active_config = 0x7F;
 
-        // KC headers virtual address: physical addr of the Mach-O header.
+        // KC headers virtual address: virtual addr of the Mach-O header.
         // This is the __TEXT segment base (fileoff=0), NOT kaddr (which may
         // be __HIB or __NULL at a lower address).
         // With revision >= 1 and KC_hdrs_vaddr != 0, XNU calls
         // i386_slide_and_rebase_image() → PE_set_kc_header(KCKindPrimary).
-        ba.kc_hdrs_vaddr = kernel_info.mach_header_phys;
+        ba.kc_hdrs_vaddr = kernel_info.mach_header_phys + 0xffff_ff80_0000_0000;
     }
 
     serial_println!("    boot_args at 0x{:x}", ba_phys);
@@ -242,6 +369,13 @@ unsafe fn write_memory_map(
     let mut offset = 0usize;
     let desc_size = core::mem::size_of::<EfiMemoryRange>();
 
+    // EFI_MEMORY_RUNTIME attribute bit. We strip this because our bootloader
+    // doesn't call SetVirtualAddressMap, so VirtualStart is 0 for all runtime
+    // entries. The kernel would map them all at VM_MIN_KERNEL_ADDRESS,
+    // overwriting itself. Since we don't support EFI runtime services, the
+    // runtime mappings are unnecessary.
+    const EFI_MEMORY_RUNTIME: u64 = 0x8000_0000_0000_0000;
+
     for desc in memory_map.entries() {
         let range = EfiMemoryRange {
             memory_type: desc.ty.0,
@@ -249,7 +383,7 @@ unsafe fn write_memory_map(
             physical_start: desc.phys_start,
             virtual_start: desc.virt_start,
             number_of_pages: desc.page_count,
-            attribute: desc.att.bits(),
+            attribute: desc.att.bits() & !EFI_MEMORY_RUNTIME,
         };
 
         core::ptr::copy_nonoverlapping(
@@ -282,14 +416,14 @@ unsafe fn count_usable_memory(memory_map: &uefi::mem::memory_map::MemoryMapOwned
     total
 }
 
-/// Load kernel file from the EFI filesystem.
-fn load_kernel_file() -> Vec<u8> {
+/// Load a file from the EFI filesystem.
+fn load_file(filename: &str) -> Vec<u8> {
     let mut fs = boot::get_image_file_system(boot::image_handle()).unwrap();
     let mut root = fs.open_volume().unwrap();
 
     let mut name_buf = [0u16; 64];
     let name = {
-        let bytes = KERNEL_FILENAME.as_bytes();
+        let bytes = filename.as_bytes();
         for (i, &b) in bytes.iter().enumerate() {
             name_buf[i] = b as u16;
         }
@@ -299,11 +433,9 @@ fn load_kernel_file() -> Vec<u8> {
 
     let file_handle = root
         .open(name, FileMode::Read, FileAttribute::empty())
-        .expect("Failed to open kernel file");
+        .unwrap_or_else(|_| panic!("Failed to open {filename}"));
 
-    let mut file = file_handle
-        .into_regular_file()
-        .expect("Kernel is not a regular file");
+    let mut file = file_handle.into_regular_file().expect("Not a regular file");
 
     let mut info_buf = alloc::vec![0u8; 256];
     let info: &FileInfo = file.get_info(&mut info_buf).unwrap();
@@ -311,9 +443,42 @@ fn load_kernel_file() -> Vec<u8> {
     serial_println!("    File size: {} bytes", file_size);
 
     let mut data = alloc::vec![0u8; file_size];
-    let bytes_read = file.read(&mut data).expect("Failed to read kernel");
+    let bytes_read = file.read(&mut data).expect("Failed to read file");
     data.truncate(bytes_read);
     data
+}
+
+/// Load an optional file from the EFI filesystem (returns None if not found).
+fn load_file_optional(filename: &str) -> Option<Vec<u8>> {
+    let mut fs = boot::get_image_file_system(boot::image_handle()).unwrap();
+    let mut root = fs.open_volume().unwrap();
+
+    let mut name_buf = [0u16; 64];
+    let name = {
+        let bytes = filename.as_bytes();
+        for (i, &b) in bytes.iter().enumerate() {
+            name_buf[i] = b as u16;
+        }
+        name_buf[bytes.len()] = 0;
+        unsafe { CStr16::from_u16_with_nul_unchecked(&name_buf[..=bytes.len()]) }
+    };
+
+    let file_handle = match root.open(name, FileMode::Read, FileAttribute::empty()) {
+        Ok(h) => h,
+        Err(_) => return None,
+    };
+
+    let mut file = file_handle.into_regular_file().expect("Not a regular file");
+
+    let mut info_buf = alloc::vec![0u8; 256];
+    let info: &FileInfo = file.get_info(&mut info_buf).unwrap();
+    let file_size = info.file_size() as usize;
+    serial_println!("    File size: {} bytes", file_size);
+
+    let mut data = alloc::vec![0u8; file_size];
+    let bytes_read = file.read(&mut data).expect("Failed to read file");
+    data.truncate(bytes_read);
+    Some(data)
 }
 
 /// Set up the Graphics Output Protocol and return framebuffer info.
@@ -352,4 +517,20 @@ struct EfiMemoryRange {
     virtual_start: u64,
     number_of_pages: u64,
     attribute: u64,
+}
+
+/// Standard CRC32 (polynomial 0xEDB88320) matching XNU's crc32().
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for &byte in data {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ 0xEDB8_8320;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    !crc
 }

@@ -1,0 +1,15 @@
+[package]
+name = "hfsplus"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+bitflags = { workspace = true }
+unicode-normalization = { workspace = true }
+hashbrown = { workspace = true }
+binrw = { workspace = true }
+spin = { workspace = true }
+zlib-rs = { workspace = true }
