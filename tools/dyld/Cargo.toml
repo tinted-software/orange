@@ -1,0 +1,15 @@
+[package]
+name = "dyld"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+loader = { workspace = true }
+memmap2 = { workspace = true }
+clap = { workspace = true }
+libc = { workspace = true }
+goblin = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

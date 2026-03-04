@@ -1,0 +1,14 @@
+[package]
+name = "loader"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+goblin = { workspace = true, features = ["mach64"] }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true
