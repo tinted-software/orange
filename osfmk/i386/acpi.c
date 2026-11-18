@@ -87,6 +87,8 @@
 #if CONFIG_SLEEP
 extern void     acpi_sleep_cpu(acpi_sleep_callback, void * refcon);
 extern void     acpi_wake_prot(void);
+extern uint32_t low_eintstack[];
+extern char mp_slave_stack[];
 #endif
 extern kern_return_t IOCPURunPlatformQuiesceActions(void);
 extern kern_return_t IOCPURunPlatformActiveActions(void);
@@ -104,7 +106,7 @@ vm_offset_t
 acpi_install_wake_handler(void)
 {
 #if CONFIG_SLEEP
-	install_real_mode_bootstrap(acpi_wake_prot);
+	install_real_mode_bootstrap(acpi_wake_prot, (vm_offset_t)low_eintstack);
 	return REAL_MODE_BOOTSTRAP_OFFSET;
 #else
 	return 0;
@@ -387,7 +389,8 @@ acpi_sleep_kernel(acpi_sleep_callback func, void *refcon)
 	/* Because we don't save the bootstrap page, and we share it
 	 * between sleep and mp slave init, we need to recreate it
 	 * after coming back from sleep or hibernate */
-	install_real_mode_bootstrap(slave_pstart);
+	install_real_mode_bootstrap(slave_pstart,
+	    (vm_offset_t)mp_slave_stack + PAGE_SIZE);
 #endif /* CONFIG_SLEEP */
 }
 
@@ -523,9 +526,14 @@ acpi_idle_kernel(acpi_sleep_callback func, void *refcon)
 
 extern char real_mode_bootstrap_end[];
 extern char real_mode_bootstrap_base[];
+extern char protected_mode_gdtr[];
 
+/*
+ * prot_entry runs in 32-bit mode at its physical address, on stack_top
+ * (a kernel virtual address of the top of a stack in low memory).
+ */
 void
-install_real_mode_bootstrap(void *prot_entry)
+install_real_mode_bootstrap(void *prot_entry, vm_offset_t stack_top)
 {
 	/*
 	 * Copy the boot entry code to the real-mode vector area REAL_MODE_BOOTSTRAP_OFFSET.
@@ -539,9 +547,21 @@ install_real_mode_bootstrap(void *prot_entry)
 	    real_mode_bootstrap_end - real_mode_bootstrap_base);
 
 	/*
-	 * Set the location at the base of the stack to point to the
-	 * common startup entry.
+	 * The trampoline's copy of protected_mode_gdtr holds the link address
+	 * of the GDT; put its physical address in the copy's base field.
 	 */
+	ml_phys_write_word(
+		REAL_MODE_BOOTSTRAP_OFFSET +
+		(unsigned int)(protected_mode_gdtr - real_mode_bootstrap_base) + 2,
+		(unsigned int)kvtophys((vm_offset_t)&master_gdt));
+
+	/*
+	 * Set the stack the entry point runs on, then the location at the
+	 * base of the stack to point to the common startup entry.
+	 */
+	ml_phys_write_word(
+		PROT_MODE_STACK + REAL_MODE_BOOTSTRAP_OFFSET,
+		(unsigned int)kvtophys(stack_top));
 	ml_phys_write_word(
 		PROT_MODE_START + REAL_MODE_BOOTSTRAP_OFFSET,
 		(unsigned int)kvtophys((vm_offset_t)prot_entry));

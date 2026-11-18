@@ -61,7 +61,11 @@ event_t mapping_replenish_event, pmap_user_pv_throttle_event;
 
 uint64_t pmap_pv_throttle_stat, pmap_pv_throttled_waiters;
 
-int pmap_asserts_enabled = (DEBUG);
+#if DEBUG
+int pmap_asserts_enabled = 1;
+#else
+int pmap_asserts_enabled = 0;
+#endif
 int pmap_asserts_traced = 0;
 
 unsigned int

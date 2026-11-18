@@ -104,7 +104,38 @@ EXT(mc_task_stack):
 	.globl	EXT(mc_task_stack_end)
 EXT(mc_task_stack_end):
 
-	/* Must not clobber EDI */
+/*
+ * 32-bit code runs at the image's physical load address, which is not a
+ * link-time constant. A 32-bit immediate of a kernel symbol relocates to its
+ * truncated virtual address, and linkers that check ranges (mold) reject that.
+ * So the 32-bit entry points do this instead:
+ *
+ *	LOAD_IMAGE_BASE		%ebx := run-time address of Lpc_base (_start)
+ *	(sym - Lpc_base)(%ebx)	run-time address of sym, as a displacement
+ *
+ * LOAD_IMAGE_BASE pushes a return address, so %esp must already point at
+ * writable, identity-mapped memory when it runs: the loader's stack at pstart
+ * and hibernate, and the real-mode trampoline's stack (PROT_MODE_STACK) for
+ * the AP and S3 wake entries.
+ */
+#define LOAD_IMAGE_BASE						 \
+	call	1f						;\
+1:	popl	%ebx						;\
+	subl	$(1b - Lpc_base), %ebx
+
+/*
+ * The run-time address of a symbol defined in another file, in reg. The
+ * assembler cannot take (sym - Lpc_base) for such a symbol, so the table
+ * after the hibernate code holds the link addresses, and the difference of
+ * their low 32 bits is taken here. Both lie in the image, so the difference
+ * is exact mod 2^32.
+ */
+#define IMAGE_ADDR_EXT(reg, sym)					 \
+	movl	(Lext_ ## sym - Lpc_base)(%ebx), reg		;\
+	subl	(Lext_pc_base - Lpc_base)(%ebx), reg		;\
+	addl	%ebx, reg
+
+/* Must not clobber EDI or EBX (the image base) */
 #define SWITCH_TO_64BIT_MODE					 \
 	movl	$(CR4_PAE),%eax		/* enable PAE */	;\
 	movl	%eax,%cr4					;\
@@ -113,12 +144,16 @@ EXT(mc_task_stack_end):
 	/* enable long mode, NX */				;\
 	orl	$(MSR_IA32_EFER_LME | MSR_IA32_EFER_NXE),%eax	;\
 	wrmsr							;\
-	movl	$EXT(BootPML4),%eax				;\
+	IMAGE_ADDR_EXT(%eax, BootPML4)			;\
 	movl	%eax,%cr3					;\
 	movl	%cr0,%eax					;\
 	orl	$(CR0_PG|CR0_WP),%eax	/* enable paging */	;\
 	movl	%eax,%cr0					;\
-	ljmpl	$KERNEL64_CS,$64f				;\
+	/* far jump to 64-bit code: lret, as an ljmp takes an absolute address */ ;\
+	pushl	$KERNEL64_CS					;\
+	leal	(64f - Lpc_base)(%ebx),%eax			;\
+	pushl	%eax						;\
+	lretl							;\
 64:								;\
 	.code64
 
@@ -139,6 +174,7 @@ EXT(mc_task_stack_end):
 	.globl	EXT(pstart)
 LEXT(_start)
 LEXT(pstart)
+Lpc_base:
 
 /*
  * Here we do the minimal setup to switch from 32 bit mode to 64 bit long mode.
@@ -162,25 +198,31 @@ LEXT(pstart)
  */	
 	mov	%eax, %edi	/* save kernbootstruct */
 
+	/* The loader's stack, used only to find the image base */
+	LOAD_IMAGE_BASE
+
 	/* Use low 32-bits of address as 32-bit stack */
-	movl	$EXT(low_eintstack), %esp
+	leal	(EXT(low_eintstack) - Lpc_base)(%ebx), %esp
 	
 	POSTCODE(PSTART_ENTRY)
 
 	/*
-	 * Set up segmentation
+	 * Set up segmentation. The GDT base is the run-time physical address;
+	 * the .quad in protected_mode_gdtr holds the link address.
 	 */
-	movl	$EXT(protected_mode_gdtr), %eax
-	lgdtl	(%eax)
+	IMAGE_ADDR_EXT(%eax, master_gdt)
+	leal	(EXT(protected_mode_gdtr) - Lpc_base)(%ebx), %ecx
+	movl	%eax, 2(%ecx)
+	lgdtl	(%ecx)
 
 	/*
 	 * Rebase Boot page tables to kernel base address.
 	 */
-	movl	$EXT(BootPML4), %eax			// Level 4:
+	IMAGE_ADDR_EXT(%eax, BootPML4)		// Level 4:
 	add	%eax, 0*8+0(%eax)			//  - 1:1
 	add	%eax, KERNEL_PML4_INDEX*8+0(%eax)	//  - kernel space
 
-	movl	$EXT(BootPDPT), %edx			// Level 3:
+	IMAGE_ADDR_EXT(%edx, BootPDPT)		// Level 3:
 	add	%eax, 0*8+0(%edx)
 	add	%eax, 1*8+0(%edx)
 	add	%eax, 2*8+0(%edx)
@@ -268,7 +310,8 @@ LEXT(slave_pstart)
 					/* need IDT for a while */
 	POSTCODE(SLAVE_PSTART)
 
-	movl	$EXT(mp_slave_stack) + PAGE_SIZE, %esp
+	LOAD_IMAGE_BASE
+	IMAGE_ADDR_EXT(%esp, mp_slave_stack_top)
 
 	xor 	%edi, %edi		/* AP, no "kernbootstruct" */
 
@@ -293,14 +336,19 @@ LEXT(slave_pstart)
 LEXT(hibernate_machine_entrypoint)
 	movl    %eax, %edi /* regparm(1) calling convention */
 
+	/* The caller's stack, used only to find the image base */
+	LOAD_IMAGE_BASE
+
 	/* Use low 32-bits of address as 32-bit stack */
-	movl $EXT(low_eintstack), %esp
+	leal	(EXT(low_eintstack) - Lpc_base)(%ebx), %esp
 	
 	/*
-	 * Set up GDT
+	 * Set up GDT (run-time physical base, as in pstart)
 	 */
-	movl	$EXT(master_gdtr), %eax
-	lgdtl	(%eax)
+	IMAGE_ADDR_EXT(%eax, master_gdt)
+	leal	(EXT(master_gdtr) - Lpc_base)(%ebx), %ecx
+	movl	%eax, 2(%ecx)
+	lgdtl	(%ecx)
 
 	/* Switch to 64-bit on the Boot PTs */
 	SWITCH_TO_64BIT_MODE
@@ -324,6 +372,19 @@ LEXT(hibernate_machine_entrypoint)
 
 	/* NOTREACHED */
 	hlt
+
+/*
+ * Link addresses of symbols defined in other files, and of Lpc_base. Data,
+ * since they are absolute. See IMAGE_ADDR_EXT.
+ */
+	.section __HIB, __data
+	.align	3
+Lext_pc_base:		.quad	Lpc_base
+Lext_BootPML4:		.quad	EXT(BootPML4)
+Lext_BootPDPT:		.quad	EXT(BootPDPT)
+Lext_master_gdt:	.quad	EXT(master_gdt)
+Lext_mp_slave_stack_top:	.quad	(EXT(mp_slave_stack) + PAGE_SIZE)
+	.section __HIB, __text
 
 /* END HIBERNATE CODE */
 
@@ -426,8 +487,9 @@ ENTRY(acpi_sleep_cpu)
 .code32
 .globl EXT(acpi_wake_prot)
 EXT(acpi_wake_prot):
-	/* protected mode, paging disabled */
-	movl	$EXT(low_eintstack), %esp
+	/* protected mode, paging disabled; the trampoline's stack */
+	LOAD_IMAGE_BASE
+	leal	(EXT(low_eintstack) - Lpc_base)(%ebx), %esp
 
 	SWITCH_TO_64BIT_MODE
 
@@ -581,6 +643,9 @@ Entry(real_mode_bootstrap_base)
 	movw	%ax, %gs
 
 	POSTCODE(SLAVE_STARTPROG_ENTRY);
+
+	/* Stack for the entry point, written by install_real_mode_bootstrap() */
+	movl	PROT_MODE_STACK+REAL_MODE_BOOTSTRAP_OFFSET, %esp
 
 	mov	PROT_MODE_START+REAL_MODE_BOOTSTRAP_OFFSET, %ecx
 	jmp 	*%ecx

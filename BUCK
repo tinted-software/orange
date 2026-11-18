@@ -1,6 +1,6 @@
 load("//xnu:codegen.bzl", "codegen_outs", "jobs_json")
-load("//xnu:flags.bzl", "GEN", "c_flags", "genassym_flags")
-load("//xnu:kernel.bzl", "BOARDS", "board", "kernel_config", "page_size", "target_triple")
+load("//xnu:flags.bzl", "GEN", "c_flags", "genassym_flags", "genassym_source")
+load("//xnu:kernel.bzl", "BOARDS", "board", "is_x86_64", "kernel_config", "kernel_platform", "page_size", "target_triple")
 load("//xnu:kernel_defs.bzl", "kernel_library_args")
 
 # The source tree the code generators read: every subsystem's headers and
@@ -65,7 +65,7 @@ genrule(
     outs = {"all": ["assym.h", "assym.s"]},
     cmd = "set -e; clang -S -fno-integrated-as -o $TMP/genassym.s " +
           " ".join(genassym_flags()) +
-          " -DXNU_PTRAUTH_NO_AUTH_NULL_SCHEMA osfmk/arm64/genassym.c; " +
+          " -DXNU_PTRAUTH_NO_AUTH_NULL_SCHEMA " + genassym_source() + "; " +
           "python3 tools/buck/extract_assym.py $TMP/genassym.s $OUT/assym.h $OUT/assym.s",
     default_target_platform = "//platforms:host",
     visibility = ["PUBLIC"],
@@ -367,6 +367,13 @@ cxx_library(**kernel_library_args(
 ))
 
 cxx_library(**kernel_library_args(
+    name = "xnu_iokit_asm",
+    subsys = "iokit",
+    srcs_var = "iokit_s_sources",
+    asm = True,
+))
+
+cxx_library(**kernel_library_args(
     name = "xnu_iokit_driverkit",
     subsys = "iokit",
     codegen_groups = ["iig_driverkit_cpp"],
@@ -387,7 +394,8 @@ cxx_library(**kernel_library_args(
     name = "xnu_pexpert",
     subsys = "pexpert",
     srcs_var = "pexpert_c_sources",
-    extra_srcs = ["pexpert/" + BOARDS[board()]["icu"]],
+    extra_srcs = (["pexpert/" + BOARDS[board()]["icu"]]
+                  if BOARDS[board()].get("icu") else []),
 ))
 
 cxx_library(**kernel_library_args(
@@ -484,6 +492,7 @@ KERNEL_LIBS = [
     ":xnu_bsd_asm",
     ":xnu_libkern",
     ":xnu_iokit",
+    ":xnu_iokit_asm",
     ":xnu_iokit_driverkit",
     ":xnu_libsa",
     ":xnu_pexpert",
@@ -504,7 +513,7 @@ cxx_binary(
     linker_flags = kernel_ldflags(),
     link_style = "static",
     deps = KERNEL_LIBS + ["//rust:xnu-rs"],
-    default_target_platform = "//platforms:aarch64-darwin",
+    default_target_platform = kernel_platform(),
     visibility = ["PUBLIC"],
 )
 
@@ -522,7 +531,7 @@ cxx_binary(
     deps = [":sandbox_kext_objects"],
     linker_flags = kext_ldflags(0),
     link_style = "static",
-    default_target_platform = "//platforms:aarch64-darwin",
+    default_target_platform = kernel_platform(),
     visibility = ["PUBLIC"],
 )
 
@@ -538,21 +547,34 @@ cxx_binary(
     deps = [":amfi_kext_objects"],
     linker_flags = kext_ldflags(1),
     link_style = "static",
-    default_target_platform = "//platforms:aarch64-darwin",
+    default_target_platform = kernel_platform(),
     visibility = ["PUBLIC"],
+)
+
+# x86_64 boots a plain MH_EXECUTE kernel: the loader hands it no kexts, and
+# libsa/bootstrap.cpp's non-prelinked path is the upstream booter one. The
+# target keeps the same name so //:qemu and scripts do not branch. Buck2's BUCK
+# dialect has no top-level `if`, so the file lists are chosen in variables.
+_KERNELCACHE_SRCS = ([":mach_kernel"] if is_x86_64() else [
+    ":mach_kernel",
+    ":sandbox_kext",
+    ":amfi_kext",
+    "tools/buck/kernelcache.py",
+])
+_KERNELCACHE_CMD = (
+    "cp $(location :mach_kernel) $OUT" if is_x86_64() else
+    "python3 tools/buck/kernelcache.py $(location :mach_kernel) -o $OUT " +
+    "--kext com.apple.security.sandbox=$(location :sandbox_kext) " +
+    "--kext com.apple.driver.AppleMobileFileIntegrity=$(location :amfi_kext) " +
+    " ".join(kc_layout_args())
 )
 
 genrule(
     name = "kernelcache",
-    srcs = [
-        "tools/buck/kernelcache.py",
-    ],
+    srcs = _KERNELCACHE_SRCS,
     out = "kernelcache",
-    cmd = "python3 tools/buck/kernelcache.py $(location :mach_kernel) -o $OUT " +
-          "--kext com.apple.security.sandbox=$(location :sandbox_kext) " +
-          "--kext com.apple.driver.AppleMobileFileIntegrity=$(location :amfi_kext) " +
-          " ".join(kc_layout_args()),
-    default_target_platform = "//platforms:aarch64-darwin",
+    cmd = _KERNELCACHE_CMD,
+    default_target_platform = kernel_platform(),
     visibility = ["PUBLIC"],
 )
 

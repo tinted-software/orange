@@ -2,16 +2,17 @@
 """Rules for XNU kernel subprojects (iostorage, msdosfs, etc.)."""
 
 load("//xnu:flags.bzl", "c_only", "cxx_only", "subproject_flags")
+load("//xnu:kernel.bzl", "kernel_platform")
 load("//xnu:sources.bzl", "SUBPROJECT_SOURCES")
 
-def _subproject_c_flags(extra_includes = [], extra_defines = []):
-    return subproject_flags(extra_includes, extra_defines) + c_only()
+def _subproject_c_flags(extra_includes = [], extra_defines = [], root = "osfmk"):
+    return subproject_flags(extra_includes, extra_defines, root = root) + c_only()
 
-def _subproject_cxx_flags(extra_includes = [], extra_defines = []):
-    return subproject_flags(extra_includes, extra_defines) + cxx_only()
+def _subproject_cxx_flags(extra_includes = [], extra_defines = [], root = "osfmk"):
+    return subproject_flags(extra_includes, extra_defines, root = root) + cxx_only()
 
-def _subproject_asm_flags(extra_includes = [], extra_defines = []):
-    return subproject_flags(extra_includes, extra_defines, asm = True)
+def _subproject_asm_flags(extra_includes = [], extra_defines = [], root = "osfmk"):
+    return subproject_flags(extra_includes, extra_defines, asm = True, root = root)
 
 def subproject_library_args(
         name,
@@ -21,7 +22,9 @@ def subproject_library_args(
         extra_includes = [],
         extra_defines = [],
         local = False,
-        visibility = ["PUBLIC"]):
+        visibility = ["PUBLIC"],
+        default_target_platform = None,
+        root = "osfmk"):
     srcs = []
     base_dir = {
         "iostorage": "subprojects/IOStorageFamily",
@@ -41,14 +44,14 @@ def subproject_library_args(
     srcs += extra_srcs
 
     if lang == "s":
-        flags = _subproject_asm_flags(extra_includes, extra_defines)
+        flags = _subproject_asm_flags(extra_includes, extra_defines, root)
         kwargs = {}
     elif lang == "cpp":
-        flags = _subproject_cxx_flags(extra_includes, extra_defines)
+        flags = _subproject_cxx_flags(extra_includes, extra_defines, root)
         kwargs = {}
     else:
-        flags = _subproject_c_flags(extra_includes, extra_defines)
-        kwargs = {"lang_compiler_flags": {"cxx": _subproject_cxx_flags(extra_includes, extra_defines)}}
+        flags = _subproject_c_flags(extra_includes, extra_defines, root)
+        kwargs = {"lang_compiler_flags": {"cxx": _subproject_cxx_flags(extra_includes, extra_defines, root)}}
 
     ret = {
         "name": name,
@@ -56,7 +59,7 @@ def subproject_library_args(
         "compiler_flags": flags,
         "link_style": "static",
         "link_whole": True,
-        "default_target_platform": "//platforms:aarch64-darwin",
+        "default_target_platform": default_target_platform or kernel_platform(),
         "visibility": visibility,
     }
     ret.update(kwargs)

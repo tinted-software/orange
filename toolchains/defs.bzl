@@ -5,17 +5,8 @@ load("@prelude//toolchains:cxx.bzl", "CxxToolsInfo")
 def _custom_cxx_tools_impl(ctx) -> list[Provider]:
     linker = ctx.attrs.linker
     linker_type = LinkerType(ctx.attrs.linker_type)
-    # `clang` is the prefix's clang (xnu.toolchain_root, resolved in
-    # toolchains/BUCK); empty means the system one on PATH. Only darwin_tools
-    # sets it, so host/none tools keep the system clang.
-    if ctx.attrs.clang:
-        compiler_path = ctx.attrs.clang
-        cxx_compiler_path = ctx.attrs.clang + "++"
-        if linker == "clang++":
-            linker = cxx_compiler_path
-    else:
-        compiler_path = "clang"
-        cxx_compiler_path = "clang++"
+    compiler_path = "clang"
+    cxx_compiler_path = "clang++"
     return [
         DefaultInfo(),
         CxxToolsInfo(

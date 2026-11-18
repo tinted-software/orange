@@ -817,7 +817,7 @@ IOHibernateSystemSleep(void)
 			}
 #endif /* DEBUG || DEVELOPMENT */
 
-			data = OSData::withValue(rtcVars);
+			data = OSData::withBytes(&rtcVars, sizeof(rtcVars));
 			if (data) {
 				if (gIOHibernateRTCVariablesKey) {
 					IOService::getPMRootDomain()->setProperty(gIOHibernateRTCVariablesKey, data);

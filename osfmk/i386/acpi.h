@@ -36,10 +36,11 @@
 /*
  * Wake up code linear address. Wake and MP startup copy
  * code to this physical address and then jump to the
- * address started at PROT_MODE_START. Some small amount
- * below PROT_MODE_START is used as scratch space
+ * address started at PROT_MODE_START. The word just below
+ * it, PROT_MODE_STACK, holds the stack top the entry point runs on.
  */
 #define PROT_MODE_START 0x800
+#define PROT_MODE_STACK (PROT_MODE_START - 4)
 #define REAL_MODE_BOOTSTRAP_OFFSET 0x2000
 
 #ifndef ASSEMBLER
@@ -47,7 +48,7 @@ typedef void (*acpi_sleep_callback)(void * refcon);
 extern vm_offset_t acpi_install_wake_handler(void);
 extern void        acpi_sleep_kernel(acpi_sleep_callback func, void * refcon);
 extern void        acpi_idle_kernel(acpi_sleep_callback func, void * refcon);
-void install_real_mode_bootstrap(void *prot_entry);
+void install_real_mode_bootstrap(void *prot_entry, vm_offset_t stack_top);
 extern uint32_t    acpi_count_enabled_logical_processors(void);
 #endif  /* ASSEMBLER */
 

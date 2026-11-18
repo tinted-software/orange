@@ -3,6 +3,7 @@ load("//xnu:subproject_defs.bzl", "subproject_library_args")
 cxx_library(**subproject_library_args(
     name = "xnu_msdosfs",
     subproject = "msdosfs",
+    root = "bsd",
     lang = "c",
     local = True,
     extra_includes = [

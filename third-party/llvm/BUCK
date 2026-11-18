@@ -1,3 +1,4 @@
+load("//xnu:kernel.bzl", "kernel_platform")
 load("//xnu:subproject_defs.bzl", "subproject_library_args")
 
 _LLVM_REV = "392dfff97d29b59d77e5cac6d4b6ef2585fe7117"
@@ -35,7 +36,10 @@ cxx_library(**subproject_library_args(
         "-DCOMPILER_RT_HAS_ATOMICS=1",
         "-Wno-error",
     ],
+    # subproject_library_args() takes no platform parameter; llvm/BUCK builds
+    # it from the argument dict directly.
 ))
+
 
 alias(
     name = "libcxx_default_assertion_handler",

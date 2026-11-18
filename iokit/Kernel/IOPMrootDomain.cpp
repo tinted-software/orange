@@ -5876,7 +5876,7 @@ IOPMrootDomain::evaluateSystemSleepPolicyFinal( void )
 			resetTimers = false;
 		}
 
-		paramsData = OSData::withValue(params);
+		paramsData = OSData::withBytes(&params, sizeof(params));
 		if (paramsData) {
 			setProperty(kIOPMSystemSleepParametersKey, paramsData.get());
 		}
@@ -7604,7 +7604,7 @@ IOPMrootDomain::setMaintenanceWakeCalendar(
 		return kIOReturnBadArgument;
 	}
 
-	data = OSData::withValue(*calendar);
+	data = OSData::withBytes(calendar, sizeof(*calendar));
 	if (!data) {
 		return kIOReturnNoMemory;
 	}

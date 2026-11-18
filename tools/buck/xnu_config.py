@@ -399,21 +399,37 @@ def resolve_src(srcroot: Path, component: str, fname: str) -> tuple[str, bool]:
     return rel, exists
 
 
-def collect(srcroot: Path, kernel_config: str) -> dict:
-    cpu = "arm64"
-    soc = "superbird"
-    platform = "MacOSX"
-    macros: dict[str, str | None] = {
-        "PLATFORM_MacOSX": "1",
-        "CPU_arm64": "1",
-        "SOC_CONFIG_superbird": "1",
-        f"SYS_{kernel_config.upper()}": "1",
-        "MASTER_CONFIG_OSS_HARDWARE": "1",
-        "MASTER_CONFIG_ENABLE_EXCLAVES": None,
-        "MASTER_CONFIG_ENABLE_SPTM": None,
-        "MASTER_CONFIG_ENABLE_KERNEL_TAG": None,
-        "SOC_IS_VIRTUALIZED": None,
-    }
+def _arch_for_board(board: str) -> str:
+    return "x86_64" if board == "qemu-x86_64" else "arm64"
+
+
+def collect(srcroot: Path, kernel_config: str, board: str = "qemu-arm64") -> dict:
+    arch = _arch_for_board(board)
+    if arch == "x86_64":
+        cpu = "x86_64"
+        soc = ""
+        platform = "MacOSX"
+        macros: dict[str, str | None] = {
+            "PLATFORM_MacOSX": "1",
+            "CPU_x86_64": "1",
+            f"SYS_{kernel_config.upper()}": "1",
+            "MASTER_CONFIG_OSS_HARDWARE": "1",
+        }
+    else:
+        cpu = "arm64"
+        soc = "superbird"
+        platform = "MacOSX"
+        macros = {
+            "PLATFORM_MacOSX": "1",
+            "CPU_arm64": "1",
+            "SOC_CONFIG_superbird": "1",
+            f"SYS_{kernel_config.upper()}": "1",
+            "MASTER_CONFIG_OSS_HARDWARE": "1",
+            "MASTER_CONFIG_ENABLE_EXCLAVES": None,
+            "MASTER_CONFIG_ENABLE_SPTM": None,
+            "MASTER_CONFIG_ENABLE_KERNEL_TAG": None,
+            "SOC_IS_VIRTUALIZED": None,
+        }
     attributes, selected_lines = parse_master(
         srcroot, kernel_config, cpu, soc, platform, macros
     )
@@ -458,8 +474,9 @@ def collect(srcroot: Path, kernel_config: str) -> dict:
 
     return {
         "kernel_config": kernel_config.lower(),
-        "machine": "superbird",
-        "arch": "arm64",
+        "board": board,
+        "machine": soc if soc else cpu,
+        "arch": arch,
         "attributes": sorted(attributes),
         "cpp_options": {
             k: (v if v is not None else "") for k, v in sorted(cpp_opts.items())
@@ -487,7 +504,7 @@ def main() -> int:
         "--outdir", type=Path, help="Write manifest.json and config headers here"
     )
     args = ap.parse_args()
-    data = collect(args.srcroot.resolve(), args.kernel_config)
+    data = collect(args.srcroot.resolve(), args.kernel_config, args.board)
     if args.outdir:
         args.outdir.mkdir(parents=True, exist_ok=True)
         for stale in ("types.h", "string.h"):
@@ -540,7 +557,10 @@ def main() -> int:
             # Board names may contain dashes (`qemu-arm64e`); C macros cannot.
             b = args.board.upper().replace("-", "_")
             lines.append(f"#ifndef {b}\n#define {b} 1\n#endif\n")
-            lines.append(f"#ifndef ARM64_BOARD_CONFIG_{b}\n#define ARM64_BOARD_CONFIG_{b} 1\n#endif\n")
+            if data["arch"] == "x86_64":
+                lines.append(f"#ifndef X86_64_BOARD_CONFIG_{b}\n#define X86_64_BOARD_CONFIG_{b} 1\n#endif\n")
+            else:
+                lines.append(f"#ifndef ARM64_BOARD_CONFIG_{b}\n#define ARM64_BOARD_CONFIG_{b} 1\n#endif\n")
             lines.append(f"#ifndef CURRENT_MACHINE_CONFIG_LC\n#define CURRENT_MACHINE_CONFIG_LC {args.board.lower()}\n#endif\n")
         (args.outdir / "master_config.h").write_text("".join(lines))
         # Mirrors SETUP/config/mkioconf.c's pseudo_inits(): one `extern int

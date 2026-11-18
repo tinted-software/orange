@@ -126,6 +126,5 @@ ignore = \
 
 [xnu]
   board = qemu-arm64
-  toolchain_root = /Users/theo/llvm
   kernel_config = DEVELOPMENT
   page_size = 16k

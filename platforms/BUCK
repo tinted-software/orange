@@ -19,6 +19,25 @@ platform(
 )
 
 platform(
+    name = "x86_64-none",
+    constraint_values = [
+        "prelude//cpu/constraints:x86_64",
+        "toolchains//:none",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+platform(
+    name = "x86_64-darwin",
+    constraint_values = [
+        "prelude//cpu/constraints:x86_64",
+        "prelude//os/constraints:macos",
+        "toolchains//:xnu",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+platform(
     name = "aarch64-darwin",
     constraint_values = [
         "prelude//cpu/constraints:arm64",

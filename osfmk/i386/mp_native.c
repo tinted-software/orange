@@ -63,7 +63,9 @@ i386_smp_init(int nmi_vector, i386_intr_func_t nmi_handler, int ipi_vector, i386
 	lapic_set_intr_func(nmi_vector, nmi_handler);
 	lapic_set_intr_func(ipi_vector, ipi_handler);
 
-	install_real_mode_bootstrap(slave_pstart);
+	extern char mp_slave_stack[];
+	install_real_mode_bootstrap(slave_pstart,
+	    (vm_offset_t)mp_slave_stack + PAGE_SIZE);
 
 	return TRUE;
 }

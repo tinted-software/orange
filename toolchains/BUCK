@@ -29,18 +29,17 @@ config_setting(
     ],
 )
 
+config_setting(
+    name = "none_x86_64",
+    constraint_values = [
+        "prelude//cpu/constraints:x86_64",
+        ":none",
+    ],
+)
+
 # Board selection must come from the root cell's [xnu] section; a plain
 # read_config here reads the toolchains cell's config and always sees the default.
 _BOARD = read_root_config("xnu", "board", "qemu")
-
-# A toolchain prefix (xnu.toolchain_root, from the root cell's config) with the
-# usual layout: <root>/bin/{clang,clang++,ld64.mold}, <root>/lib/libLTO.so.
-# mold and clang find libLTO beside the bin/ they live in, so nothing here names
-# it. Unset means the system clang and ld64.mold on PATH, as a self-hosted
-# build uses.
-_ROOT = read_root_config("xnu", "toolchain_root", "")
-_CLANG = _ROOT + "/bin/clang" if _ROOT else ""
-_LD = "ld64.mold"
 
 # Optimization level for every compile in the tree, shared with //xnu:kernel.bzl
 # (opt_level()): C and C++ get -O<level>, Rust gets -C opt-level=<level>.
@@ -49,7 +48,7 @@ _OPT_FLAG = "-O" + _OPT if _OPT in ["0", "1", "2", "3", "s", "z"] else fail("xnu
 
 # The system clang can't parse the 4-arg "authenticates-null-values" __ptrauth
 # schema; the tree clang (patched, see subprojects/llvm-project) can.
-_NO_AUTH_NULL_SCHEMA = [] if _ROOT else ["-DXNU_PTRAUTH_NO_AUTH_NULL_SCHEMA"]
+_NO_AUTH_NULL_SCHEMA = ["-DXNU_PTRAUTH_NO_AUTH_NULL_SCHEMA"]
 _RUST_EXTRA = {"sysroot": select({
     ":xnu_macos": ":rust_sysroot",
     "DEFAULT": None,
@@ -59,8 +58,11 @@ _RUST_EXTRA = {"sysroot": select({
 # rebuilt (rustc then rejects it). core/alloc/compiler_builtins are built with
 # -Zbuild-std for the board's triple into a sysroot (rust_sysroot below).
 _ARM64E = _BOARD == "qemu-arm64e"
-_RUST_DARWIN_TRIPLE = "arm64e-apple-darwin" if _ARM64E else "aarch64-apple-darwin"
-_APPLE_TRIPLE = "arm64e-apple-macos27.0.0" if _ARM64E else "arm64-apple-macos27.0.0"
+_X86_64 = _BOARD == "qemu-x86_64"
+_RUST_DARWIN_TRIPLE = ("x86_64-apple-darwin" if _X86_64 else
+                       ("arm64e-apple-darwin" if _ARM64E else "aarch64-apple-darwin"))
+_APPLE_TRIPLE = ("x86_64-apple-macos27.0.0" if _X86_64 else
+                 ("arm64e-apple-macos27.0.0" if _ARM64E else "arm64-apple-macos27.0.0"))
 _rust_toolchain = sysroot_rust_toolchain
 
 # The rlibs of the sysroot below only load into the rustc that built them, but
@@ -80,6 +82,13 @@ genrule(
     cmd = """
 set -e
 export RUSTC_BOOTSTRAP=1
+# The build scripts are linked for the host by plain clang, which execs `ld`:
+# where there is none (a Linux box with only mold or lld), point it at mold.
+if ! command -v ld >/dev/null 2>&1; then
+  mkdir -p $TMP/bin
+  printf '#!/bin/sh\nexec ld.mold "$@"\n' > $TMP/bin/ld && chmod +x $TMP/bin/ld
+  export PATH=$TMP/bin:$PATH
+fi
 W=$TMP/w; mkdir -p $W/src
 cp $SRCDIR/rust_sysroot/Cargo.toml $W/
 cp $SRCDIR/rust_sysroot/src/lib.rs $W/src/
@@ -98,6 +107,7 @@ _rust_toolchain(
     name = "rust",
     default_edition = "2021",
     rustc_target_triple = select({
+        ":none_x86_64": "x86_64-unknown-uefi",
         ":none": "aarch64-unknown-none",
         ":xnu_macos": _RUST_DARWIN_TRIPLE,
         "prelude//os/constraints:macos": "aarch64-apple-darwin",
@@ -106,6 +116,10 @@ _rust_toolchain(
     # The prelude passes no optimization level; without this every crate
     # (kernel and host tools alike) builds at opt-level 0.
     rustc_flags = ["-C", "opt-level=" + _OPT] + select({
+        ":none_x86_64": [
+            "-C",
+            "panic=abort",
+        ],
         ":none": [
             "-C",
             "panic=abort",
@@ -140,7 +154,7 @@ _rust_toolchain(
             "-C",
             "linker=clang",
             "-C",
-            "link-arg=--ld-path=" + _LD,
+            "link-arg=--ld-path=ld64.mold",
             "-C",
             "link-arg=-target",
             "-C",
@@ -179,7 +193,7 @@ custom_cxx_tools(
     name = "darwin_tools",
     linker = "clang++",
     linker_type = "darwin",
-    clang = _CLANG,
+    clang = "clang",
     visibility = ["PUBLIC"],
 )
 
@@ -214,7 +228,7 @@ cxx_tools_info_toolchain(
         ":xnu_macos": [
             "-target",
             _APPLE_TRIPLE,
-            "--ld-path=" + _LD,
+            "--ld-path=ld64.mold",
         ],
         "prelude//os/constraints:macos": [],
         "DEFAULT": [

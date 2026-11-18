@@ -1,0 +1,34 @@
+# The x86_64 UEFI bootloader: a PE32+ EFI application that loads the x86_64
+# kernel and jumps to it. Built for the x86_64-unknown-uefi triple, which the
+# rust toolchain selects for //platforms:x86_64-none. The toolchain itself is
+# not changed for this; the loader is the only target on that platform.
+rust_binary(
+    name = "bootx64",
+    crate = "uefi_loader",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/main.rs",
+    edition = "2021",
+    deps = [
+        "//third-party/rust:object",
+    ],
+    default_target_platform = "//platforms:x86_64-none",
+    visibility = ["PUBLIC"],
+)
+
+# The boot volume: a directory QEMU presents as a FAT drive (vvfat), so no
+# mount, mkfs or mtools is needed on any host. It holds the loader at the
+# removable-media path and the x86_64 kernel at the root, which is where the
+# loader looks for it. Requires `--config xnu.board=qemu-x86_64`, so that
+# //:mach_kernel is the x86_64 kernel.
+genrule(
+    name = "esp",
+    out = "esp",
+    cmd = """
+set -e
+mkdir -p $OUT/EFI/BOOT
+cp $(location :bootx64) $OUT/EFI/BOOT/BOOTX64.EFI
+cp $(location //:mach_kernel) $OUT/mach_kernel
+""",
+    default_target_platform = "//platforms:host",
+    visibility = ["PUBLIC"],
+)

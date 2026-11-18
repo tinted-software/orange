@@ -39,7 +39,6 @@ section so every command picks them up.
 | --- | --- | --- |
 | `board` | `qemu` | `qemu-arm64e` for anything that runs Apple userspace (arm64e, pointer authentication); also `qemu`, `superbird`, `ipad41` |
 | `page_size` | `4k` | `16k` is required by Apple's arm64 userspace |
-| `toolchain_root` | unset | Prefix of a clang + `ld64.mold` toolchain (`bin/clang`, `bin/ld64.mold`, `lib/libLTO.so`). Use the tree's patched LLVM, `subprojects/llvm-build`; unset uses the ones on `PATH` |
 | `kernel_config` | `DEVELOPMENT` | Which `config/MASTER*` configuration to build |
 | `opt_level` | `3` | `0`, `1`, `2`, `3`, `s` or `z`, for every C, C++ and Rust compile |
 
@@ -49,7 +48,6 @@ The commands below assume this `.buckconfig.local`:
 [xnu]
 board = qemu-arm64e
 page_size = 16k
-toolchain_root = subprojects/llvm-build
 ```
 
 ## Building

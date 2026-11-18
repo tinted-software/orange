@@ -928,6 +928,7 @@ SOURCES = {
         "Kernel/arm/AppleARMSMP.cpp",
         "Kernel/arm/OSSARMCPU.cpp",
     ],
+    "iokit_s_sources": [],
     # ---- libkern ----
     "libkern_c_sources": [
         "gen/OSAtomicOperations.c",

@@ -12,6 +12,13 @@ arguments are defined once, in `//xnu:flags.bzl`.
 # (kernel_ldflags) and tools/buck/kernelcache.py must agree, so the latter
 # receives them from kc_layout_args().
 LINK_ADDR = "0xfffffff007004000"
+# x86_64's __HIB segment and Mach-O image base, from makedefs/MakeInc.def:
+# KERNEL_MIN_ADDRESS + KERNEL_BASE_OFFSET and + 0x100000 again.  The low 32
+# bits of these addresses are also the physical load addresses start.s uses, so
+# the UEFI loader maps __HIB at 0x100000 and __TEXT at 0x200000.
+X86_64_HIB_ADDR = "0xffffff8000100000"
+X86_64_LINK_ADDR = "0xffffff8000200000"
+X86_64_KERNEL_BASE = "0xffffff8000000000"
 KC_LAYOUT = {
     # Outer mach header page(s); the kernel's __TEXT follows.
     "kernel_offset": 0x8000,
@@ -69,11 +76,11 @@ def kext_ldflags(slot):
         return "-Wl,-segaddr," + name + "," + _kc_addr(_kext_slot(KC_LAYOUT[region], slot))
     return [
         "-target", target_triple(),
-        "-mcpu=" + b["cpu"],
+    ] + target_cpu_flags() + [
         "-nostdlib",
         "-nostdlib++",
         "-Wl,-kext",
-        "--ld-path=/usr/bin/ld",
+        "--ld-path=ld64.mold",
         "-Wl,-no_fixup_chains",
         "-Wl,-segalign,0x4000",
         seg("__TEXT", "kext_text"),
@@ -108,6 +115,16 @@ BOARDS = {
             "-mcpu=generic+pauth",
         ],
     },
+    "qemu-x86_64": {
+        "triple": "x86_64-apple-macos27.0.0",
+        "arch": "x86_64",
+        "march": "x86-64",
+        "defines": [
+            "-DCURRENT_MACHINE_CONFIG_LC=qemu_x86_64",
+            "-DQEMU",
+            "-DX86_64_BOARD_CONFIG_QEMU",
+        ],
+    },
     "superbird": {
         "triple": "arm64-apple-macos27.0.0",
         "cpu": "cortex-a53",
@@ -136,12 +153,46 @@ def board():
     return read_config("xnu", "board", "qemu")
 
 
+def arch():
+    """Kernel architecture of the selected board: `arm64` or `x86_64`."""
+    return BOARDS[board()].get("arch", "arm64")
+
+
+def is_x86_64():
+    return arch() == "x86_64"
+
+
+def kernel_platform():
+    """Buck platform the kernel and its libraries are built for."""
+    return "//platforms:x86_64-darwin" if is_x86_64() else "//platforms:aarch64-darwin"
+
+
+def kernel_link_addr():
+    return X86_64_LINK_ADDR if is_x86_64() else LINK_ADDR
+
+
+def target_cpu_flags():
+    """`-march` on x86_64, `-mcpu` on arm64. The clang driver rejects -mcpu
+    for x86 targets. x86_64 adds -mcx16: macOS's x86_64 baseline has
+    cmpxchg16b, and without it 16-byte atomics become libatomic calls the
+    freestanding kernel does not link."""
+    b = BOARDS[board()]
+    if is_x86_64():
+        return ["-march=" + b.get("march", "x86-64"), "-mcx16"]
+    return ["-mcpu=" + b["cpu"]]
+
+
 def kernel_config():
     """Selected MASTER configuration, from the `xnu.kernel_config` key."""
     return read_config("xnu", "kernel_config", "DEVELOPMENT")
 
 def page_size():
-    """Kernel page granule, selected with --config xnu.page_size=4k|16k."""
+    """Kernel page granule, selected with --config xnu.page_size=4k|16k.
+
+    x86_64 always uses 4 KiB pages; the arm64 16 KiB granule does not exist
+    there."""
+    if is_x86_64():
+        return "4k"
     granule = read_config("xnu", "page_size", "4k")
     if granule not in ["4k", "16k"]:
         fail("xnu.page_size must be 4k or 16k, got %s" % granule)
@@ -162,12 +213,65 @@ def opt_level():
         fail("xnu.opt_level must be 0, 1, 2, 3, s or z, got %s" % level)
     return level
 
-# Final Mach-O kernel link arguments, mirroring meson.build's `ldflags`.
+# Final Mach-O kernel link arguments, mirroring the tree's makedefs.
 def kernel_ldflags():
     b = BOARDS[board()]
+    if is_x86_64():
+        # The upstream x86_64 layout has __HIB below the image base so the
+        # booter can enter at a low physical address and keep the low 32 bits
+        # of the link addresses meaningful until long mode is enabled.
+        return [
+            "-target", target_triple(),
+        ] + target_cpu_flags() + [
+            "-nostdlib",
+            "-nostdlib++",
+            "-static",
+            "-Wl,-e,__start",
+            "-Wl,-pie",
+            "-Wl,-static",
+            "-Wl,-image_base," + X86_64_LINK_ADDR,
+            "-Wl,-segaddr,__HIB," + X86_64_HIB_ADDR,
+            "-Wl,-seg_page_size,__TEXT,0x200000",
+            "-Wl,-sectalign,__HIB,__bootPT,0x1000",
+            "-Wl,-sectalign,__HIB,__desc,0x1000",
+            "-Wl,-sectalign,__HIB,__data,0x1000",
+            "-Wl,-sectalign,__HIB,__text,0x1000",
+            "-Wl,-sectalign,__HIB,__const,0x1000",
+            "-Wl,-sectalign,__HIB,__bss,0x1000",
+            "-Wl,-sectalign,__HIB,__common,0x1000",
+            "-Wl,-sectalign,__HIB,__llvm_prf_cnts,0x1000",
+            "-Wl,-sectalign,__HIB,__llvm_prf_names,0x1000",
+            "-Wl,-sectalign,__HIB,__llvm_prf_data,0x1000",
+            "-Wl,-sectalign,__HIB,__textcoal_nt,0x1000",
+            "-Wl,-sectalign,__HIB,__cstring,0x1000",
+            "-Wl,-sectalign,__DATA,__percpu,0x1000",
+            "-Wl,-rename_section,__DATA,__const,__DATA_CONST,__const",
+            "-Wl,-segprot,__DATA_CONST,r--,r--",
+            "-Wl,-rename_section,__KLD,__const,__KLDDATA,__const",
+            "-Wl,-rename_section,__KLD,__cstring,__KLDDATA,__cstring",
+            "-Wl,-segprot,__KLDDATA,rw-,rw-",
+            "-Wl,-segprot,__KLD,r-x,r-x",
+            "-Wl,-no_zero_fill_sections",
+            "-Wl,-headerpad,0x1000",
+            # As for arm64: -pie leaves absolute pointers in read-only data
+            # (vnodeop tables, __desc) that the link resolves at its fixed
+            # image base; these flags keep the link from rejecting them.
+            "-Wl,-read_only_relocs,suppress",
+            "-Wl,-no_fixup_chains",
+            "-Wl,-u,_gIOPL031RTCBuiltinInfo",
+            "-Wl,-u,__ZN11IOVirtioBlk10gMetaClassE",
+            "-Wl,-u,__ZN9IOStorage10gMetaClassE",
+            "-Wl,-u,__ZN20IOBlockStorageDriver10gMetaClassE",
+            "-Wl,-u,__ZN7IOMedia10gMetaClassE",
+            "-Wl,-u,__ZN16IOMediaBSDClient10gMetaClassE",
+            "-Wl,-u,__ZN17IOPartitionScheme10gMetaClassE",
+            "-Wl,-u,__ZN22IOFDiskPartitionScheme10gMetaClassE",
+            "-Wl,-u,__ZN21IOGUIDPartitionScheme10gMetaClassE",
+            "-Wl,-u,__ZN24IOUserBlockStorageDevice10gMetaClassE",
+        ]
     return [
     "-target", target_triple(),
-    "-mcpu=" + b["cpu"],
+    ] + target_cpu_flags() + [
     "-nostdlib",
     "-nostdlib++",
     "-static",

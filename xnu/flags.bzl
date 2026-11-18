@@ -14,7 +14,17 @@ Board, page size and optimization level come from the `[xnu]` buckconfig
 section (see `kernel.bzl`).
 """
 
-load("//xnu:kernel.bzl", "BOARDS", "LINK_ADDR", "board", "opt_level", "page_size")
+load(
+    "//xnu:kernel.bzl",
+    "BOARDS",
+    "LINK_ADDR",
+    "X86_64_LINK_ADDR",
+    "board",
+    "is_x86_64",
+    "opt_level",
+    "page_size",
+    "target_cpu_flags",
+)
 
 # The generated tree (`:xnu_codegen`) and the `assym` header pair (`:xnu_assym`).
 GEN = "$(location //:xnu_codegen)"
@@ -75,13 +85,8 @@ _COMMON_HEAD = [
 ]
 
 _COMMON_TAIL = [
-    "-Darm64",
-    "-DARM64",
-    "-D__ARM64__",
     "-DLP64",
     "-DPAGE_SIZE_FIXED",
-    "-UARM_LARGE_MEMORY",
-    "-UARM_LARGE_MEMORY_KERNONLY",
     "-DAPPLE",
     "-DKERNEL",
     "-DKERNEL_PRIVATE",
@@ -93,10 +98,35 @@ _COMMON_TAIL = [
     "-DXNU_PLATFORM_MacOSX",
     "-DXNU_TARGET_OS_OSX",
     "-D__API__=v4",
-    "-fno-aarch64-jump-table-hardening",
     "-Wno-unknown-warning-option",
     "-Wno-unused-command-line-argument",
     "-Wno-nonportable-include-path",
+]
+
+_ARM64_TAIL = [
+    "-Darm64",
+    "-DARM64",
+    "-D__ARM64__",
+    "-UARM_LARGE_MEMORY",
+    "-UARM_LARGE_MEMORY_KERNONLY",
+    "-fno-aarch64-jump-table-hardening",
+]
+
+# From makedefs/MakeInc.def CFLAGS_X86_64. -mkernel is what gives the kernel
+# its -mno-red-zone and kernel code model on Apple's clang.
+_X86_64_TAIL = [
+    "-Dx86_64",
+    "-DX86_64",
+    "-D__X86_64__",
+    "-DKERNEL_BASE_OFFSET=0x100000",
+    "-mkernel",
+    "-msoft-float",
+    # XNU's C++ kalloc-type validator falls back to a member-walking
+    # approximation when Apple's __builtin_xnu_type_summary is absent. On
+    # x86_64 it conservatively flags plain structs with trailing padding
+    # (e.g. IOPMCalendarStruct) as possibly holding pointers; the kernel's
+    # own OSData calls are still audited, just not by this static assert.
+    "-DXNU_KT_ALLOW_IMPRECISE_SUMMARY=1",
 ]
 
 # C++-only arguments.
@@ -119,24 +149,41 @@ _IOSTORAGE_INC = ["/gen/export/IOKit/storage"]
 
 def _target():
     b = BOARDS[board()]
-    return ["-target", b["triple"], "-mcpu=" + b["cpu"]]
+    return ["-target", b["triple"]] + target_cpu_flags()
 
 
 def _common(gen):
     """Target-wide arguments: target, codegen, defines, board, page size."""
     b = BOARDS[board()]
     args = _target() + _COMMON_HEAD + ["-O" + opt_level()] + _COMMON_TAIL
+    args += _X86_64_TAIL if is_x86_64() else _ARM64_TAIL
     args += ["-include", gen + "/gen/master_config.h"]
-    args += ["-DVM_KERNEL_LINK_ADDRESS=" + LINK_ADDR]
+    args += ["-DVM_KERNEL_LINK_ADDRESS=" + (X86_64_LINK_ADDR if is_x86_64() else LINK_ADDR)]
     args += b["defines"]
     # The page size is a buckconfig choice. Every TU (C and asm) must agree,
     # or e.g. start.s fills a 4k-sized bootstrap_pagetables with 16k tables.
-    if page_size() == "16k":
+    if not is_x86_64() and page_size() == "16k":
         args += ["-D__ARM_16K_PG__=1"]
     return args
 
 
-def _includes(gen, assym):
+_ROOTS = ["osfmk", "bsd", "iokit", "libkern", "libsa", "pexpert", "security"]
+
+def _root_flags(gen, subsys):
+    """The source-tree roots, with the subsystem's own root first.
+
+    As in makedefs' INCFLAGS (INCFLAGS_GEN), a component's own tree is searched
+    before the others: bsd's <machine/endian.h> must find bsd/i386/endian.h,
+    not osfmk/i386/endian.h. The generated export/osfmk tree follows osfmk.
+    """
+    out = []
+    for root in [subsys] + [r for r in _ROOTS if r != subsys]:
+        out.append("-I" + root)
+        if root == "osfmk":
+            out.append("-I" + gen + "/gen/export/osfmk")
+    return out
+
+def _includes(gen, assym, subsys = "osfmk"):
     """Include roots, interleaved in the order that preserves header shadowing.
 
     `assym` is the directory holding `assym.h`/`assym.s`, or None for the one
@@ -146,14 +193,7 @@ def _includes(gen, assym):
         "-I.",
         "-I" + gen,
         "-I" + gen + "/gen",
-        "-Iosfmk",
-        "-I" + gen + "/gen/export/osfmk",
-        "-Ibsd",
-        "-Iiokit",
-        "-Ilibkern",
-        "-Ilibsa",
-        "-Ipexpert",
-        "-Isecurity",
+    ] + _root_flags(gen, subsys) + [
         "-I" + gen + "/gen/export",
         "-IEXTERNAL_HEADERS",
         "-I" + gen + "/gen",
@@ -194,7 +234,7 @@ def c_flags(subsys, gen = GEN, assym = ASSYM):
     args = _common(gen)
     if subsys == "osfmk":
         args = _mig_ks(gen) + args
-    args += _includes(gen, assym)
+    args += _includes(gen, assym, subsys)
     if subsys == "iokit":
         args += ["-I" + gen + p for p in _IOSTORAGE_INC]
     args += _meta_features(gen)
@@ -203,9 +243,14 @@ def c_flags(subsys, gen = GEN, assym = ASSYM):
 
 def asm_flags(subsys, gen = GEN, assym = ASSYM):
     """Assembly flags for one kernel subsystem."""
-    args = _mig_ks(gen) + _common(gen) + _includes(gen, assym) + _ASM_ONLY
+    args = _mig_ks(gen) + _common(gen) + _includes(gen, assym, subsys) + _ASM_ONLY
     args += _meta_features(gen)
     return args + _SUBSYS[subsys]
+
+
+def genassym_source():
+    """The genassym translation unit for the selected architecture."""
+    return "osfmk/i386/genassym.c" if is_x86_64() else "osfmk/arm64/genassym.c"
 
 
 def genassym_flags(gen = GEN):
@@ -216,13 +261,15 @@ def genassym_flags(gen = GEN):
     return c_flags("osfmk", gen, None)
 
 
-def subproject_flags(extra_includes = [], extra_defines = [], asm = False, gen = GEN, assym = ASSYM):
+def subproject_flags(extra_includes = [], extra_defines = [], asm = False, gen = GEN, assym = ASSYM, root = "osfmk"):
     """Flags for a subproject library (IOStorageFamily, msdosfs, ...).
 
     The same target, codegen and include setup as the kernel, without a
-    subsystem's own defines; `extra_*` come from the subproject.
+    subsystem's own defines; `extra_*` come from the subproject. `root` is the
+    source-tree component the subproject belongs to (msdosfs is a bsd kext), so
+    its own headers resolve as they do for that component.
     """
     args = _common(gen) + _meta_features(gen) + list(extra_includes)
-    args += _includes(gen, assym)
+    args += _includes(gen, assym, root)
     args += _ASM_ONLY if asm else []
     return args + list(extra_defines)

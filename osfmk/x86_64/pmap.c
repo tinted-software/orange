@@ -169,7 +169,11 @@ int pmap_stats_assert = 1;
 char pmap_cpu_data_assert[(((offsetof(cpu_data_t, cpu_tlb_invalid) - offsetof(cpu_data_t, cpu_active_cr3)) == 8) && (offsetof(cpu_data_t, cpu_active_cr3) % 64 == 0)) ? 1 : -1];
 boolean_t pmap_trace = FALSE;
 
-boolean_t       no_shared_cr3 = DEBUG;          /* TRUE for DEBUG by default */
+#if DEBUG
+boolean_t       no_shared_cr3 = TRUE;   /* TRUE for DEBUG by default */
+#else
+boolean_t       no_shared_cr3 = FALSE;
+#endif
 
 #if DEVELOPMENT || DEBUG
 int nx_enabled = 1;                     /* enable no-execute protection -- set during boot */
